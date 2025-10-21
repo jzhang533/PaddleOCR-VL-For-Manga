@@ -1,0 +1,101 @@
+[project]
+name = "paddleocr-vl-sft"
+version = "0.1.0"
+description = "Supervised Fine-Tuning for PaddleOCR-VL"
+readme = "README.md"
+requires-python = ">=3.9"
+
+[tool.ruff]
+# Set the maximum line length to 88 (Black's default)
+line-length = 88
+
+# Assume Python 3.9+
+target-version = "py39"
+
+# Exclude common directories
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "*.egg-info",
+    ".eggs",
+    "build",
+    "dist",
+    "data",
+]
+
+[tool.ruff.lint]
+# Enable specific rule sets
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort (import sorting)
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "SIM",    # flake8-simplify
+    "ARG",    # flake8-unused-arguments
+    "PTH",    # flake8-use-pathlib
+    "RUF",    # Ruff-specific rules
+]
+
+# Ignore specific rules
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "B008",   # Do not perform function calls in argument defaults
+    "B905",   # zip() without an explicit strict= parameter
+    "N812",   # Lowercase imported as non-lowercase
+    "ARG002", # Unused method argument
+    "PTH123", # Path.open() should be used instead of built-in open()
+    "SIM108", # Use ternary operator instead of if-else-block
+]
+
+# Allow autofix for all enabled rules
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+# Ignore import violations in __init__.py files
+"__init__.py" = ["F401", "F403"]
+# Ignore specific rules in test files
+"test_*.py" = ["ARG001", "ARG002"]
+
+[tool.ruff.lint.isort]
+# Configure import sorting
+known-first-party = ["custom_collator", "ocr_dataset", "metrics", "utils"]
+force-single-line = false
+lines-after-imports = 2
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "local-folder",
+]
+
+[tool.ruff.lint.pydocstyle]
+# Use Google-style docstrings
+convention = "google"
+
+[tool.ruff.format]
+# Use double quotes for strings
+quote-style = "double"
+
+# Indent with spaces
+indent-style = "space"
+
+# Use line endings for Unix
+line-ending = "lf"
+
+# Respect magic trailing comma
+skip-magic-trailing-comma = false
+
+# Format docstrings
+docstring-code-format = true
+docstring-code-line-length = 72

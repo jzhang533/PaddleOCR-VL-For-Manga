@@ -1,15 +1,8 @@
-# -*- coding: utf-8 -*-
 """
 Supervised Fine-Tuning (SFT) script for PaddleOCR-VL-0.9B using TRL library.
 
-This version supports loading data from a caption file in format: image_filename|caption
-Expected structure:
-    data/
-    ├── captions.txt (lines: "image1.jpg|caption text here")
-    └── images/
-        ├── image1.jpg
-        ├── image2.jpg
-        └── ...
+This version uses MangaDataset for training with both synthetic and
+Manga109 data.
 
 Available tasks:
 - 'ocr' -> 'OCR:'
@@ -18,240 +11,185 @@ Available tasks:
 - 'formula' -> 'Formula Recognition:'
 """
 
-import os
-import torch
-from pathlib import Path
-from typing import Optional
 from dataclasses import dataclass, field
-from PIL import Image
+from typing import Optional
 
-from datasets import Dataset
+import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoProcessor,
     HfArgumentParser,
-    TrainingArguments,
     Trainer,
+    TrainingArguments,
 )
+
+from custom_collator import CustomDataCollatorForVisionLanguageModeling
+from metrics import OCRMetrics
+from ocr_dataset import MangaDataset
 
 
 # ==================== Configuration ====================
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-TASK_PROMPTS = {
-    "ocr": "OCR:",
-    "table": "Table Recognition:",
-    "chart": "Chart Recognition:",
-    "formula": "Formula Recognition:",
-}
 
 
 # ==================== Data Classes ====================
 @dataclass
 class ModelArguments:
     """Arguments for model configuration."""
+
     model_path: str = field(
-        default="/home/aistudio/.paddlex/official_models/PaddleOCR-VL/PaddleOCR-VL-0.9B",
-        metadata={"help": "Path to the PaddleOCR-VL model"}
+        default="../PaddleOCR-VL", metadata={"help": "Path to the PaddleOCR-VL model"}
+    )
+    use_flash_attention_2: bool = field(
+        default=True,
+        metadata={
+            "help": (
+                "Enable Flash Attention 2 for faster training. "
+                "Requires flash-attn package and A100/H100 GPU. "
+                "Provides 2-4x speedup."
+            )
+        },
     )
 
 
 @dataclass
 class DataArguments:
     """Arguments for dataset configuration."""
-    images_dir: str = field(
-        default="./data/images",
-        metadata={"help": "Path to the images directory"}
-    )
-    caption_file: str = field(
-        default="./data/labels.txt",
-        metadata={"help": "Path to the caption file (format: image_filename|caption)"}
-    )
-    task: str = field(
-        default="ocr",
-        metadata={"help": "Task type: 'ocr', 'table', 'chart', or 'formula'"}
-    )
-    max_seq_length: int = field(
-        default=1024,
-        metadata={"help": "Maximum sequence length for training"}
-    )
 
-
-# ==================== Dataset Preparation ====================
-def load_dataset_from_caption_file(images_dir: str, caption_file: str) -> Dataset:
-    """Load dataset from a caption file."""
-    images = []
-    texts = []
-    
-    print(f"Loading captions from {caption_file}...")
-    
-    try:
-        with open(caption_file, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                
-                if not line:
-                    continue
-                
-                parts = line.split('|', 1)
-                if len(parts) != 2:
-                    print(f"⚠️  Warning: Line {line_num} skipped (invalid format): {line}")
-                    continue
-                
-                image_name, caption = parts
-                image_name = image_name.strip()
-                caption = caption.strip()
-                
-                image_path = os.path.join(images_dir, image_name)
-                
-                if not os.path.exists(image_path):
-                    raise FileNotFoundError(f"Image not found (line {line_num}): {image_path}")
-                
-                images.append(image_path)
-                texts.append(caption)
-    
-    except FileNotFoundError as e:
-        raise Exception(f"Error loading caption file: {e}")
-    
-    if not images:
-        raise ValueError(f"No valid image-caption pairs found in {caption_file}")
-    
-    print(f"✓ Loaded {len(images)} image-caption pairs")
-    
-    dataset = Dataset.from_dict({
-        "image": images,
-        "text": texts,
-    })
-    
-    return dataset
-
-
-# ==================== Custom Data Collator ====================
-class MultimodalCollator:
-    """Custom collator for multimodal data - handles batching and padding."""
-    
-    def __init__(self, processor, task: str, max_seq_length: int = 1024):
-        self.processor = processor
-        self.task = task
-        self.max_seq_length = max_seq_length
-        self.task_prompt = TASK_PROMPTS.get(task, TASK_PROMPTS["ocr"])
-    
-    def __call__(self, batch):
-        """
-        Process a batch of data.
-        
-        Args:
-            batch: List of dicts with 'image' and 'text' keys
-        
-        Returns:
-            Dictionary with processed batch data ready for model
-        """
-        images = []
-        texts = []
-        
-        # Load images and prepare texts
-        for item in batch:
-            # Load image
-            image_path = item["image"]
-            try:
-                image = Image.open(image_path).convert("RGB")
-                images.append(image)
-            except Exception as e:
-                print(f"Error loading image {image_path}: {e}")
-                raise
-            
-            # Prepare text with prompt
-            caption = item["text"]
-            messages = [{"role": "user", "content": self.task_prompt}]
-            text_prompt = self.processor.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
+    split: str = field(
+        default="train", metadata={"help": "Dataset split to use: 'train' or 'val'"}
+    )
+    eval_split: str = field(
+        default="test",
+        metadata={"help": "Dataset split to use for evaluation: 'test' or 'val'"},
+    )
+    max_length: int = field(
+        default=2048,
+        metadata={
+            "help": (
+                "Maximum sequence length (includes image + text tokens). "
+                "For PaddleOCR-VL: images can be 400-2000+ tokens depending "
+                "on size. Set high enough to avoid truncating image tokens, "
+                "or use None to disable truncation."
             )
-            full_text = text_prompt + caption
-            texts.append(full_text)
-        
-        # Process all inputs together with proper padding
-        inputs = self.processor(
-            text=texts,
-            images=images,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=self.max_seq_length,
-        )
-        
-        # Prepare labels (same as input_ids for language modeling)
-        inputs["labels"] = inputs["input_ids"].clone()
-        
-        # Mask padding tokens in labels (don't compute loss on padding)
-        inputs["labels"][inputs["attention_mask"] == 0] = -100
-        
-        return inputs
+        },
+    )
+    eval_limit_size: Optional[int] = field(
+        default=1000,
+        metadata={
+            "help": (
+                "Limit eval dataset size to reduce memory usage. "
+                "Default 1000 samples. Use None for full eval set."
+            )
+        },
+    )
+    skip_packages: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": ("Comma-separated list of package IDs to skip (e.g., '0,1,2')")
+        },
+    )
+    pad_to_multiple_of: Optional[int] = field(
+        default=8,
+        metadata={
+            "help": (
+                "Pad sequence length to multiple of this value for GPU "
+                "optimization. Use 8 for A100/H100 with mixed precision "
+                "(FP16/BF16), 64 for older GPUs, or None to disable."
+            )
+        },
+    )
 
 
 def train():
     """Main training function."""
-    
+
     # Parse arguments
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    
+
     # Set remove_unused_columns to False to avoid errors
     training_args.remove_unused_columns = False
-    
-    # Validate paths
-    if not os.path.exists(data_args.images_dir):
-        raise FileNotFoundError(f"Images directory not found: {data_args.images_dir}")
-    if not os.path.exists(data_args.caption_file):
-        raise FileNotFoundError(f"Caption file not found: {data_args.caption_file}")
-    
+
     # Load model and processor
     print(f"Loading model from {model_args.model_path}...")
-    model = AutoModelForCausalLM.from_pretrained(
-        model_args.model_path,
-        trust_remote_code=True,
-        dtype=torch.bfloat16,
-        device_map=DEVICE,
-    )
-    
+
+    # Prepare model loading kwargs
+    model_kwargs = {
+        "trust_remote_code": True,
+        "dtype": torch.bfloat16,
+        "device_map": DEVICE,
+    }
+
+    # Add Flash Attention 2 if enabled
+    if model_args.use_flash_attention_2:
+        print("🚀 Flash Attention 2 enabled (requires flash-attn package)")
+        model_kwargs["attn_implementation"] = "flash_attention_2"
+
+    model = AutoModelForCausalLM.from_pretrained(model_args.model_path, **model_kwargs)
+
     processor = AutoProcessor.from_pretrained(
         model_args.model_path,
         trust_remote_code=True,
         use_fast=True,
     )
-    
-    # Load dataset
-    print(f"\nLoading dataset...")
-    train_dataset = load_dataset_from_caption_file(
-        images_dir=data_args.images_dir,
-        caption_file=data_args.caption_file,
+
+    # Parse skip_packages if provided
+    skip_packages = None
+    if data_args.skip_packages:
+        skip_packages = [int(x.strip()) for x in data_args.skip_packages.split(",")]
+
+    # Load dataset using MangaDataset
+    print(f"\nLoading {data_args.split} dataset...")
+    train_dataset = MangaDataset(
+        split=data_args.split,
+        skip_packages=skip_packages,
     )
-    
-    print(f"Dataset size: {len(train_dataset)}")
-    print(f"Sample 0 - Image: {train_dataset[0]['image']}, Text length: {len(train_dataset[0]['text'])}")
-    
-    # Create data collator
-    data_collator = MultimodalCollator(
-        processor=processor,
-        task=data_args.task,
-        max_seq_length=data_args.max_seq_length,
+
+    print(f"Training dataset size: {len(train_dataset)}")
+
+    # Load evaluation dataset
+    print(f"\nLoading {data_args.eval_split} dataset for evaluation...")
+    eval_dataset = MangaDataset(
+        split=data_args.eval_split,
+        limit_size=data_args.eval_limit_size,
+        augment=False,  # No augmentation for eval
+        skip_packages=skip_packages,
     )
-    
-    # Initialize Trainer
+
+    print(f"Evaluation dataset size: {len(eval_dataset)}")
+
+    my_collator = CustomDataCollatorForVisionLanguageModeling(
+        processor,
+        max_length=data_args.max_length,
+        pad_to_multiple_of=data_args.pad_to_multiple_of,
+    )
+
+    print("Initialize metrics")
+    metrics = OCRMetrics(processor)
+
+    print("Initialize Trainer")
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        data_collator=data_collator,
+        eval_dataset=eval_dataset,
+        data_collator=my_collator,
+        compute_metrics=metrics.compute_metrics,
     )
-    
+
     # Train
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("Starting training...")
-    print("="*50)
-    trainer.train()
-    
+    print("=" * 50)
+    checkpoint = None
+    if training_args.resume_from_checkpoint is not None:
+        checkpoint = training_args.resume_from_checkpoint
+        print(f"Resuming from checkpoint: {checkpoint}")
+
+    trainer.train(resume_from_checkpoint=checkpoint)
+
+
     # Save model
     print(f"\nSaving model to {training_args.output_dir}...")
     trainer.save_model(training_args.output_dir)
