@@ -10,6 +10,9 @@
   <a href="https://github.com/jzhang533/PaddleOCR-VL-For-Manga" target="_blank" style="margin: 2px;">
     <img alt="Github" src="https://img.shields.io/badge/GitHub-Repository-000?logo=github&color=0000FF" style="display: inline-block; vertical-align: middle;"/>
   </a>
+  <a href="https://pfcc.blog/posts/paddleocr-vl-for-manga" target="_blank" style="margin: 2px;">
+    <img alt="Tutorial" src="https://img.shields.io/badge/👐%20Blog-Tutorial-A5de54" style="display: inline-block; vertical-align: middle;"/>
+  </a>
 </div>
 
 ## Model Description
@@ -18,7 +21,7 @@ PaddleOCR-VL-For-Manga is an OCR model enhanced for Japanese manga text recognit
 
 This model was fine-tuned on a combination of the [Manga109-s dataset](http://www.manga109.org/) and 1.5 million synthetic data samples. It showcases the potential of Supervised Fine-Tuning (SFT) to create highly accurate, domain-specific VLMs for OCR tasks from a powerful, general-purpose base like [PaddleOCR-VL](https://huggingface.co/PaddlePaddle/PaddleOCR-VL), which supports 109 languages.
 
-This project serves as a practical guide for developers looking to build their own custom OCR solutions. You can find the training code at the [Github Repository](https://github.com/jzhang533/PaddleOCR-VL-For-Manga), a tutorial is coming soon.
+This project serves as a practical guide for developers looking to build their own custom OCR solutions. You can find the training code at the [Github Repository](https://github.com/jzhang533/PaddleOCR-VL-For-Manga), a step by step tutorial is avaiable [here](https://pfcc.blog/posts/paddleocr-vl-for-manga).
 
 ## Performance
 
